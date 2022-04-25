@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"strings"
@@ -12,7 +13,7 @@ import (
 )
 
 var dnsTimeout = 10 * time.Second
-var useEdns0 bool
+var useEdns0 uint
 
 func dnsQuery(fqdn string, rtype uint16, nameservers []string, recursive bool) (*dns.Msg, error) {
 	m := createDNSMsg(fqdn, rtype, recursive)
@@ -23,6 +24,16 @@ func dnsQuery(fqdn string, rtype uint16, nameservers []string, recursive bool) (
 		if err == nil && len(in.Answer) > 0 {
 			break
 		}
+		if recursive && !in.RecursionAvailable {
+			log.Println("recursion unavailable")
+		}
+		if err == nil && recursive && !in.RecursionAvailable {
+			fmt.Printf("retry server %s without recursion: %s\n", ns, fqdn)
+			in, err = dnsQuery(fqdn, rtype, []string{ns}, false)
+			if err == nil && len(in.Answer) > 0 {
+				break
+			}
+		}
 	}
 	return in, err
 }
@@ -30,9 +41,10 @@ func dnsQuery(fqdn string, rtype uint16, nameservers []string, recursive bool) (
 func createDNSMsg(fqdn string, rtype uint16, recursive bool) *dns.Msg {
 	m := new(dns.Msg)
 	m.SetQuestion(fqdn, rtype)
-	if useEdns0 {
-		m.SetEdns0(4096, false)
+	if useEdns0 > 0 {
+		m.SetEdns0(uint16(useEdns0), false)
 	}
+	fmt.Printf("msg edns: %d, recursive: %t, rtype: %d\n", useEdns0, recursive, rtype)
 	if !recursive {
 		m.RecursionDesired = false
 	}
@@ -60,12 +72,13 @@ func usage() {
 
 func main() {
 	var server string
-	var recursive bool
-	flag.BoolVar(&useEdns0, "edns0", false, "enable the use of edns0")
+	var recursive bool = true
+	var noRecurse bool
+	flag.UintVar(&useEdns0, "edns0", 1232, "enable the use of edns0")
 	flag.StringVar(&server, "server", "ns1.namesystem.se", "default nameserver to use")
-	flag.BoolVar(&recursive, "recursive", true, "use recursive lookup")
+	flag.BoolVar(&noRecurse, "no-recurse", false, "use recursive lookup")
 	flag.Parse()
-
+	recursive = !noRecurse
 	_, _, err := net.SplitHostPort(server)
 	if err != nil {
 		server += ":53"
@@ -82,18 +95,18 @@ func main() {
 
 	fmt.Printf("Server: %s\n", server)
 	fmt.Printf("Recursive: %t\n", recursive)
-	fmt.Printf("edns0: %t\n", useEdns0)
-	fmt.Println("----- checking -----")
+	fmt.Printf("edns0: %d\n", useEdns0)
+	log.Println("----- quering -----")
 
 	m, err := dnsQuery(fqdn, dns.TypeTXT, []string{server}, recursive)
 	if err != nil {
-		fmt.Printf("error quering dns: %v", err)
+		log.Printf("error quering dns: %v", err)
 		os.Exit(1)
 	}
-	fmt.Println("----- answers -----")
-	for i, a := range m.Answer {
-		fmt.Printf("%d: %+v\n", i, a)
-	}
-	fmt.Println("----- full response -----")
+	// fmt.Println("----- answers -----")
+	// for i, a := range m.Answer {
+	// 	fmt.Printf("%d: %+v\n", i, a)
+	// }
+	log.Println("----- response -----")
 	fmt.Printf("%+v\n", m)
 }
